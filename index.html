@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0d6f65">
+    <title>AllerX</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icons/icon-192.png" sizes="192x192">
+    <link rel="apple-touch-icon" href="./icons/icon-192.png">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <img class="brand-icon" src="./icons/icon-192.png" alt="" width="64" height="64">
+          <div>
+            <p class="eyebrow">Mobile</p>
+            <h1>AllerX</h1>
+            <p class="subtitle">Check labels for your personal triggers.</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="status-pill" id="profileStatus">Silicone profile active</div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="checker panel" aria-labelledby="checkerTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Label Check</p>
+              <h2 id="checkerTitle">Ingredient Text</h2>
+            </div>
+            <button class="icon-button" id="sampleButton" type="button" title="Load sample label" aria-label="Load sample label">
+              <span aria-hidden="true">+</span>
+            </button>
+          </div>
+
+          <div class="barcode-tool" aria-labelledby="barcodeTitle">
+            <div class="barcode-heading">
+              <div>
+                <p class="eyebrow">Product Lookup</p>
+                <h3 id="barcodeTitle">Barcode</h3>
+              </div>
+              <span class="lookup-source">Open Facts</span>
+            </div>
+            <div class="barcode-controls">
+              <input id="barcodeInput" class="text-input" type="text" inputmode="numeric" autocomplete="off" pattern="[0-9]*" aria-label="Barcode number" placeholder="UPC or EAN">
+              <button class="secondary-button" id="scanBarcodeButton" type="button">Scan</button>
+              <button class="primary-button lookup-button" id="lookupBarcodeButton" type="button">Lookup</button>
+            </div>
+
+            <div class="scanner-panel" id="scannerPanel" hidden>
+              <video id="scannerVideo" playsinline muted aria-label="Barcode camera preview"></video>
+              <div class="scanner-footer">
+                <span id="scannerStatus">Point the rear camera at the barcode.</span>
+                <button class="secondary-button compact-button" id="stopScanButton" type="button">Stop</button>
+              </div>
+            </div>
+
+            <div class="lookup-status" id="lookupStatus" aria-live="polite" hidden>
+              <img id="lookupProductImage" alt="" hidden>
+              <div>
+                <strong id="lookupStatusTitle"></strong>
+                <p id="lookupStatusDetail"></p>
+              </div>
+            </div>
+          </div>
+
+          <label class="field-label" for="productName">Product name</label>
+          <input id="productName" class="text-input" type="text" placeholder="Optional">
+
+          <label class="field-label" for="sourceNotes">Source / notes</label>
+          <input id="sourceNotes" class="text-input" type="text" placeholder="INCIDecoder, brand site, package label">
+
+          <label class="field-label" for="ingredientText">Ingredients</label>
+          <textarea id="ingredientText" class="ingredient-input" spellcheck="false" placeholder="Paste the ingredient list here"></textarea>
+
+          <div class="actions">
+            <button class="primary-button" id="analyzeButton" type="button">Analyze</button>
+            <button class="secondary-button" id="clearButton" type="button">Clear</button>
+          </div>
+        </section>
+
+        <section class="results panel" aria-labelledby="resultTitle">
+          <div class="result-banner unknown" id="resultBanner">
+            <p class="result-kicker">Result</p>
+            <h2 id="resultTitle">Unknown</h2>
+            <p id="resultSummary">Paste ingredient text to check this label.</p>
+          </div>
+
+          <div class="matched-area">
+            <div class="section-heading">
+              <h3>Matched Triggers</h3>
+              <span id="matchCount">0</span>
+            </div>
+            <div class="empty-state" id="matchEmpty">No matches yet.</div>
+            <ul class="match-list" id="matchList"></ul>
+          </div>
+
+          <div class="highlight-area">
+            <div class="section-heading">
+              <h3>Label View</h3>
+              <span id="textSource">Waiting</span>
+            </div>
+            <div class="highlight-box" id="highlightBox">Ingredient text will appear here after analysis.</div>
+          </div>
+        </section>
+
+        <section class="profile panel" aria-labelledby="profileTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Profile</p>
+              <h2 id="profileTitle">Silicone Watchlist</h2>
+            </div>
+          </div>
+
+          <div class="trigger-group high">
+            <div>
+              <h3>High Priority</h3>
+              <p>Dimethicone family</p>
+            </div>
+            <span class="badge danger">Avoid</span>
+          </div>
+
+          <div class="chips" id="builtInChips"></div>
+
+          <div class="custom-trigger">
+            <label class="field-label" for="customTrigger">Add non-silicone custom trigger</label>
+            <div class="inline-form">
+              <input id="customTrigger" class="text-input" type="text" placeholder="Example: lanolin">
+              <button class="secondary-button" id="addTriggerButton" type="button">Add</button>
+            </div>
+            <div class="chips custom" id="customChips"></div>
+          </div>
+        </section>
+
+        <section class="history panel" aria-labelledby="historyTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Local</p>
+              <h2 id="historyTitle">Recent Checks</h2>
+              <p class="panel-note">Keeps latest 50 on this device. Export your log before clearing it.</p>
+            </div>
+            <div class="panel-tools">
+              <button class="secondary-button compact-button" id="exportHistoryButton" type="button">Export CSV</button>
+              <button class="icon-button" id="clearHistoryButton" type="button" title="Clear history" aria-label="Clear history">
+                <span aria-hidden="true">x</span>
+              </button>
+            </div>
+          </div>
+          <div class="empty-state" id="historyEmpty">No saved checks yet.</div>
+          <ul class="history-list" id="historyList"></ul>
+        </section>
+      </main>
+
+      <footer class="safety-note">
+        AllerX checks only the ingredient text available to it. For serious reactions, verify the package label or contact the manufacturer.
+      </footer>
+    </div>
+
+    <script src="https://unpkg.com/@zxing/browser@0.2.0/umd/zxing-browser.min.js" integrity="sha384-HRtzk9lZgkbSgvUyQrnfC/GxiXZgwaNyD7hC9wcXlsBpDhkS80ISl73juef2FRuf" crossorigin="anonymous"></script>
+    <script src="./detector.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
