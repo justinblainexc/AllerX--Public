@@ -166,6 +166,25 @@
       </footer>
     </div>
 
+    <div class="crop-dialog" id="cropDialog" hidden>
+      <section class="crop-dialog-panel" role="dialog" aria-modal="true" aria-labelledby="cropDialogTitle">
+        <div class="crop-dialog-heading">
+          <div>
+            <p class="eyebrow">Ingredient Photo</p>
+            <h2 id="cropDialogTitle">Crop ingredient panel</h2>
+          </div>
+          <button class="icon-button" id="closeCropButton" type="button" title="Cancel crop" aria-label="Cancel crop">
+            <span aria-hidden="true">x</span>
+          </button>
+        </div>
+        <div class="crop-stage" id="cropStage"></div>
+        <div class="crop-actions">
+          <button class="secondary-button" id="retakePhotoButton" type="button">Retake</button>
+          <button class="primary-button" id="useCropButton" type="button">Use crop</button>
+        </div>
+      </section>
+    </div>
+
     <script src="https://unpkg.com/@zxing/browser@0.2.0/umd/zxing-browser.min.js" integrity="sha384-HRtzk9lZgkbSgvUyQrnfC/GxiXZgwaNyD7hC9wcXlsBpDhkS80ISl73juef2FRuf" crossorigin="anonymous"></script>
     <script src="./detector.js"></script>
     <script src="./app.js"></script>

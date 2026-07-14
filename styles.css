@@ -727,6 +727,75 @@ mark.watch-match {
   line-height: 1.45;
 }
 
+body.crop-open {
+  overflow: hidden;
+}
+
+.crop-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: rgba(16, 21, 19, 0.82);
+}
+
+.crop-dialog[hidden] {
+  display: none;
+}
+
+.crop-dialog-panel {
+  display: grid;
+  grid-template-rows: auto minmax(280px, 1fr) auto;
+  width: min(100%, 720px);
+  max-height: calc(100dvh - 24px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+}
+
+.crop-dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.crop-dialog-heading h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.crop-stage {
+  position: relative;
+  width: 100%;
+  height: min(62dvh, 560px);
+  min-height: 280px;
+  overflow: hidden;
+  background: #101513;
+}
+
+.crop-stage > img {
+  display: block;
+  max-width: 100%;
+}
+
+.crop-stage .cropper-container {
+  width: 100%;
+  height: 100%;
+}
+
+.crop-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px 16px 16px;
+}
+
 @media (max-width: 880px) {
   .app-shell {
     width: min(100% - 24px, 680px);
@@ -828,5 +897,25 @@ mark.watch-match {
 
   .topbar-actions .status-pill {
     grid-column: 1 / -1;
+  }
+
+  .crop-dialog {
+    padding: 6px;
+  }
+
+  .crop-dialog-panel {
+    max-height: calc(100dvh - 12px);
+  }
+
+  .crop-dialog-heading {
+    padding: 10px 12px;
+  }
+
+  .crop-stage {
+    height: min(66dvh, 560px);
+  }
+
+  .crop-actions {
+    padding: 10px 12px 12px;
   }
 }

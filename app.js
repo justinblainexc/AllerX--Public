@@ -6,6 +6,10 @@ const STORAGE_KEYS = {
 const HISTORY_LIMIT = 50;
 const TESSERACT_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js";
 const TESSERACT_SCRIPT_INTEGRITY = "sha384-2BQ3U3OdKOb0Uczxqr41I9UvZkzr4V9Hv8uSzMMZAlmhsFClvdZX5wi5fDCzG+tM";
+const CROPPER_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js";
+const CROPPER_SCRIPT_INTEGRITY = "sha384-jrOgQzBlDeUNdmQn3rUt/PZD+pdcRBdWd/HWRqRo+n2OR2QtGyjSaJC0GiCeH+ir";
+const CROPPER_STYLE_URL = "https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css";
+const CROPPER_STYLE_INTEGRITY = "sha384-6LFfkTKLRlzFtgx8xsWyBdKGpcMMQTkv+dB7rAbugeJAu1Ym2q1Aji1cjHBG12Xh";
 
 const feedbackOptions = [
   { value: "correct", label: "Correct" },
@@ -175,6 +179,11 @@ const elements = {
   lookupProductImage: document.querySelector("#lookupProductImage"),
   labelPhotoInput: document.querySelector("#labelPhotoInput"),
   labelPhotoButton: document.querySelector("#labelPhotoButton"),
+  cropDialog: document.querySelector("#cropDialog"),
+  cropStage: document.querySelector("#cropStage"),
+  closeCropButton: document.querySelector("#closeCropButton"),
+  retakePhotoButton: document.querySelector("#retakePhotoButton"),
+  useCropButton: document.querySelector("#useCropButton"),
 };
 
 let customTriggers = loadJson(STORAGE_KEYS.customTriggers, []);
@@ -187,6 +196,9 @@ let zxingControls = null;
 let tesseractLoadPromise = null;
 let ocrWorker = null;
 let ocrDraftNeedsReview = false;
+let cropperLoadPromise = null;
+let cropperInstance = null;
+let cropPhotoUrl = "";
 
 function loadJson(key, fallback) {
   try {
@@ -455,6 +467,181 @@ function loadTesseract() {
   }
 
   return tesseractLoadPromise;
+}
+
+function loadCropper() {
+  if (typeof globalThis.Cropper === "function") {
+    return Promise.resolve(globalThis.Cropper);
+  }
+
+  if (!cropperLoadPromise) {
+    cropperLoadPromise = new Promise((resolve, reject) => {
+      let loadedAssets = 0;
+      const finishAsset = () => {
+        loadedAssets += 1;
+        if (loadedAssets === 2) {
+          resolve(globalThis.Cropper);
+        }
+      };
+      const failAsset = () => reject(new Error("Image cropper could not be loaded."));
+
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = CROPPER_STYLE_URL;
+      stylesheet.integrity = CROPPER_STYLE_INTEGRITY;
+      stylesheet.crossOrigin = "anonymous";
+      stylesheet.addEventListener("load", finishAsset, { once: true });
+      stylesheet.addEventListener("error", failAsset, { once: true });
+
+      const script = document.createElement("script");
+      script.src = CROPPER_SCRIPT_URL;
+      script.integrity = CROPPER_SCRIPT_INTEGRITY;
+      script.crossOrigin = "anonymous";
+      script.addEventListener("load", finishAsset, { once: true });
+      script.addEventListener("error", failAsset, { once: true });
+
+      document.head.append(stylesheet);
+      document.head.append(script);
+    }).catch((error) => {
+      cropperLoadPromise = null;
+      throw error;
+    });
+  }
+
+  return cropperLoadPromise;
+}
+
+function closeCropDialog() {
+  cropperInstance?.destroy();
+  cropperInstance = null;
+  elements.cropStage.replaceChildren();
+  elements.cropDialog.hidden = true;
+  document.body.classList.remove("crop-open");
+  elements.useCropButton.disabled = false;
+  elements.useCropButton.textContent = "Use crop";
+  elements.retakePhotoButton.disabled = false;
+  elements.labelPhotoButton.disabled = false;
+  if (cropPhotoUrl) {
+    URL.revokeObjectURL(cropPhotoUrl);
+    cropPhotoUrl = "";
+  }
+}
+
+async function openCropDialog(file) {
+  if (!file || !file.type.startsWith("image/")) {
+    setLookupStatus("error", "Choose a label photo", "Use the camera or select an image file.");
+    return;
+  }
+
+  stopBarcodeScan();
+  closeCropDialog();
+  setOcrDraftState(false);
+  elements.labelPhotoButton.disabled = true;
+  elements.ingredientText.value = "";
+  renderUnknownLookup("Crop the package photo to the ingredient panel.");
+  setLookupStatus("", "Preparing crop", "Loading the captured package photo.");
+
+  try {
+    const cropperLibrary = await loadCropper();
+    if (typeof cropperLibrary !== "function") {
+      throw new Error("Image cropper is unavailable.");
+    }
+
+    cropPhotoUrl = URL.createObjectURL(file);
+    const image = document.createElement("img");
+    image.alt = "Captured package label";
+    image.src = cropPhotoUrl;
+    elements.cropStage.append(image);
+    elements.cropDialog.hidden = false;
+    document.body.classList.add("crop-open");
+    await image.decode();
+
+    cropperInstance = new cropperLibrary(image, {
+      viewMode: 1,
+      dragMode: "move",
+      autoCropArea: 0.72,
+      responsive: true,
+      restore: false,
+      checkCrossOrigin: false,
+      modal: true,
+      guides: true,
+      center: true,
+      highlight: true,
+      background: false,
+      cropBoxMovable: true,
+      cropBoxResizable: true,
+      toggleDragModeOnDblclick: false,
+      zoomOnTouch: true,
+      zoomOnWheel: true,
+    });
+    setLookupStatus("", "Crop ingredient panel", "Only the selected area will be read.");
+  } catch {
+    closeCropDialog();
+    setLookupStatus("error", "Crop unavailable", "Retake the photo or enter the package ingredients manually.");
+    renderUnknownLookup("The package photo could not be prepared for cropping.");
+  }
+}
+
+function canvasToBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Cropped image could not be created."));
+      }
+    }, "image/jpeg", 0.95);
+  });
+}
+
+async function useCroppedPhoto() {
+  const cropData = cropperInstance?.getData(true);
+  if (!cropData || cropData.width < 20 || cropData.height < 20) {
+    setLookupStatus("warning", "Select the ingredients", "Resize the crop box around the ingredient panel.");
+    return;
+  }
+
+  elements.useCropButton.disabled = true;
+  elements.useCropButton.textContent = "Preparing";
+  elements.retakePhotoButton.disabled = true;
+
+  try {
+    const longSide = Math.max(cropData.width, cropData.height);
+    const scale = Math.min(6, 2200 / longSide);
+    const width = Math.max(1, Math.round(cropData.width * scale));
+    const height = Math.max(1, Math.round(cropData.height * scale));
+    const canvas = cropperInstance.getCroppedCanvas({
+      width,
+      height,
+      fillColor: "#fff",
+      imageSmoothingEnabled: true,
+      imageSmoothingQuality: "high",
+    });
+    if (!canvas) {
+      throw new Error("Cropped image could not be created.");
+    }
+
+    const processedCanvas = document.createElement("canvas");
+    processedCanvas.width = canvas.width;
+    processedCanvas.height = canvas.height;
+    const context = processedCanvas.getContext("2d");
+    context.filter = "grayscale(100%) contrast(115%)";
+    context.drawImage(canvas, 0, 0);
+    const croppedPhoto = await canvasToBlob(processedCanvas);
+    closeCropDialog();
+    await readLabelPhoto(croppedPhoto);
+  } catch {
+    elements.useCropButton.disabled = false;
+    elements.useCropButton.textContent = "Use crop";
+    elements.retakePhotoButton.disabled = false;
+    setLookupStatus("error", "Crop failed", "Adjust the selection and try again, or retake the photo.");
+  }
+}
+
+function retakeLabelPhoto() {
+  closeCropDialog();
+  elements.labelPhotoInput.value = "";
+  elements.labelPhotoInput.click();
 }
 
 function renderOcrProgress(message) {
@@ -937,6 +1124,7 @@ function deleteHistoryItem(id) {
 
 function clearForm() {
   stopBarcodeScan();
+  closeCropDialog();
   setOcrDraftState(false);
   elements.barcodeInput.value = "";
   elements.productName.value = "";
@@ -958,7 +1146,20 @@ function bindEvents() {
     elements.labelPhotoInput.click();
   });
   elements.labelPhotoInput.addEventListener("change", () => {
-    readLabelPhoto(elements.labelPhotoInput.files?.[0]);
+    openCropDialog(elements.labelPhotoInput.files?.[0]);
+  });
+  elements.closeCropButton.addEventListener("click", closeCropDialog);
+  elements.retakePhotoButton.addEventListener("click", retakeLabelPhoto);
+  elements.useCropButton.addEventListener("click", useCroppedPhoto);
+  elements.cropDialog.addEventListener("click", (event) => {
+    if (event.target === elements.cropDialog) {
+      closeCropDialog();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !elements.cropDialog.hidden) {
+      closeCropDialog();
+    }
   });
   elements.barcodeInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
