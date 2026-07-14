@@ -1,4 +1,4 @@
-const CACHE_NAME = "allerx-mobile-v1";
+const CACHE_NAME = "allerx-mobile-v2";
 const APP_FILES = [
   "./",
   "./index.html",

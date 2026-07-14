@@ -4,6 +4,8 @@ const STORAGE_KEYS = {
 };
 
 const HISTORY_LIMIT = 50;
+const TESSERACT_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js";
+const TESSERACT_SCRIPT_INTEGRITY = "sha384-2BQ3U3OdKOb0Uczxqr41I9UvZkzr4V9Hv8uSzMMZAlmhsFClvdZX5wi5fDCzG+tM";
 
 const feedbackOptions = [
   { value: "correct", label: "Correct" },
@@ -171,6 +173,8 @@ const elements = {
   lookupStatusTitle: document.querySelector("#lookupStatusTitle"),
   lookupStatusDetail: document.querySelector("#lookupStatusDetail"),
   lookupProductImage: document.querySelector("#lookupProductImage"),
+  labelPhotoInput: document.querySelector("#labelPhotoInput"),
+  labelPhotoButton: document.querySelector("#labelPhotoButton"),
 };
 
 let customTriggers = loadJson(STORAGE_KEYS.customTriggers, []);
@@ -180,6 +184,9 @@ let scanTimerId = null;
 let barcodeDetector = null;
 let scanInProgress = false;
 let zxingControls = null;
+let tesseractLoadPromise = null;
+let ocrWorker = null;
+let ocrDraftNeedsReview = false;
 
 function loadJson(key, fallback) {
   try {
@@ -411,6 +418,107 @@ function normalizeBarcode(value) {
   return value.replace(/\D/g, "");
 }
 
+function setOcrDraftState(needsReview) {
+  ocrDraftNeedsReview = needsReview;
+  elements.analyzeButton.textContent = needsReview ? "Check reviewed text" : "Analyze";
+}
+
+function normalizeOcrText(value) {
+  return value
+    .replaceAll("\r", "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function loadTesseract() {
+  if (globalThis.Tesseract?.createWorker) {
+    return Promise.resolve(globalThis.Tesseract);
+  }
+
+  if (!tesseractLoadPromise) {
+    tesseractLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = TESSERACT_SCRIPT_URL;
+      script.integrity = TESSERACT_SCRIPT_INTEGRITY;
+      script.crossOrigin = "anonymous";
+      script.addEventListener("load", () => resolve(globalThis.Tesseract), { once: true });
+      script.addEventListener("error", () => {
+        script.remove();
+        reject(new Error("OCR library could not be loaded."));
+      }, { once: true });
+      document.head.append(script);
+    }).catch((error) => {
+      tesseractLoadPromise = null;
+      throw error;
+    });
+  }
+
+  return tesseractLoadPromise;
+}
+
+function renderOcrProgress(message) {
+  const progress = Number.isFinite(message.progress) ? Math.round(message.progress * 100) : 0;
+  const isReading = message.status === "recognizing text";
+  const detail = isReading
+    ? `Reading label on this device - ${progress}%`
+    : "Preparing on-device text recognition.";
+  setLookupStatus("", "Reading ingredient label", detail);
+}
+
+async function readLabelPhoto(file) {
+  if (!file || !file.type.startsWith("image/")) {
+    setLookupStatus("error", "Choose a label photo", "Use the camera or select an image file.");
+    return;
+  }
+
+  stopBarcodeScan();
+  setOcrDraftState(false);
+  elements.labelPhotoButton.disabled = true;
+  elements.ingredientText.value = "";
+  renderUnknownLookup("Reading the package ingredient label.");
+  setLookupStatus("", "Preparing label photo", "Loading on-device text recognition.");
+
+  try {
+    const tesseract = await loadTesseract();
+    if (!tesseract?.createWorker) {
+      throw new Error("OCR is unavailable.");
+    }
+
+    ocrWorker = await tesseract.createWorker("eng", 1, { logger: renderOcrProgress });
+    const result = await ocrWorker.recognize(file);
+    const ingredientText = normalizeOcrText(result?.data?.text || "");
+    if (!ingredientText) {
+      setLookupStatus("warning", "No text detected", "Retake the photo close to the ingredient panel in bright, even light.");
+      renderUnknownLookup("No ingredient text could be read from the photo.");
+      return;
+    }
+
+    const barcode = normalizeBarcode(elements.barcodeInput.value);
+    if (!elements.productName.value.trim() && barcode) {
+      elements.productName.value = `Barcode ${barcode}`;
+    }
+    elements.sourceNotes.value = barcode
+      ? `Package ingredient label - OCR draft - barcode ${barcode}`
+      : "Package ingredient label - OCR draft";
+    elements.ingredientText.value = ingredientText;
+    setOcrDraftState(true);
+    setLookupStatus("warning", "OCR draft ready", "Review every line against the package, correct mistakes, then select Check reviewed text.");
+    renderUnknownLookup("OCR text must be reviewed before AllerX checks it.");
+    elements.ingredientText.focus();
+  } catch {
+    setLookupStatus("error", "Label reading unavailable", "Check the connection, retake the photo, or enter the package ingredients manually.");
+    renderUnknownLookup("The package label could not be read.");
+  } finally {
+    if (ocrWorker) {
+      await ocrWorker.terminate().catch(() => {});
+      ocrWorker = null;
+    }
+    elements.labelPhotoButton.disabled = false;
+    elements.labelPhotoInput.value = "";
+  }
+}
+
 function getFactsSource(url) {
   const host = new URL(url).hostname;
   if (host.includes("openbeautyfacts")) {
@@ -445,6 +553,10 @@ async function lookupBarcode(rawBarcode = elements.barcodeInput.value) {
   }
 
   stopBarcodeScan();
+  setOcrDraftState(false);
+  elements.productName.value = "";
+  elements.sourceNotes.value = "";
+  elements.ingredientText.value = "";
   elements.lookupBarcodeButton.disabled = true;
   setLookupStatus("", "Looking up product", `Barcode ${barcode}`);
 
@@ -457,8 +569,9 @@ async function lookupBarcode(rawBarcode = elements.barcodeInput.value) {
     });
 
     if (response.status === 404) {
-      elements.ingredientText.value = "";
-      setLookupStatus("warning", "Product not found", "No Open Facts record was available. Use the package ingredient label.");
+      elements.productName.value = `Barcode ${barcode}`;
+      elements.sourceNotes.value = `Package label - barcode ${barcode}`;
+      setLookupStatus("warning", "Product not found", "No Open Facts record was available. Photograph the ingredient label below.");
       renderUnknownLookup("No product record was available for this barcode.");
       return;
     }
@@ -470,8 +583,9 @@ async function lookupBarcode(rawBarcode = elements.barcodeInput.value) {
     const data = await response.json();
     const product = data.product;
     if (!product) {
-      elements.ingredientText.value = "";
-      setLookupStatus("warning", "Product not found", "No Open Facts record was available. Use the package ingredient label.");
+      elements.productName.value = `Barcode ${barcode}`;
+      elements.sourceNotes.value = `Package label - barcode ${barcode}`;
+      setLookupStatus("warning", "Product not found", "No Open Facts record was available. Photograph the ingredient label below.");
       renderUnknownLookup("No product record was available for this barcode.");
       return;
     }
@@ -617,6 +731,9 @@ async function startBarcodeScan() {
 }
 
 function analyze({ save = true } = {}) {
+  if (ocrDraftNeedsReview) {
+    setOcrDraftState(false);
+  }
   const productName = elements.productName.value.trim();
   const sourceNotes = elements.sourceNotes.value.trim();
   const ingredientText = elements.ingredientText.value;
@@ -820,10 +937,12 @@ function deleteHistoryItem(id) {
 
 function clearForm() {
   stopBarcodeScan();
+  setOcrDraftState(false);
   elements.barcodeInput.value = "";
   elements.productName.value = "";
   elements.sourceNotes.value = "";
   elements.ingredientText.value = "";
+  elements.labelPhotoInput.value = "";
   renderResult(AllerXDetector.summarizeMatches([], ""));
   renderMatches([]);
   renderHighlight("", []);
@@ -834,6 +953,13 @@ function bindEvents() {
   elements.lookupBarcodeButton.addEventListener("click", () => lookupBarcode());
   elements.scanBarcodeButton.addEventListener("click", startBarcodeScan);
   elements.stopScanButton.addEventListener("click", stopBarcodeScan);
+  elements.labelPhotoButton.addEventListener("click", () => {
+    elements.labelPhotoInput.value = "";
+    elements.labelPhotoInput.click();
+  });
+  elements.labelPhotoInput.addEventListener("change", () => {
+    readLabelPhoto(elements.labelPhotoInput.files?.[0]);
+  });
   elements.barcodeInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();

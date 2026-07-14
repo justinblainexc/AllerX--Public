@@ -220,6 +220,15 @@ h1 {
   flex: initial;
 }
 
+.label-photo-controls {
+  display: flex;
+  margin-top: 10px;
+}
+
+.label-photo-controls .secondary-button {
+  min-height: 42px;
+}
+
 .scanner-panel {
   margin-top: 10px;
   overflow: hidden;
@@ -789,6 +798,10 @@ mark.watch-match {
   .barcode-controls .primary-button,
   .barcode-controls .secondary-button {
     min-width: 0;
+  }
+
+  .label-photo-controls .secondary-button {
+    width: 100%;
   }
 
   .panel-heading {
