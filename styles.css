@@ -221,12 +221,24 @@ h1 {
 }
 
 .label-photo-controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
   margin-top: 10px;
 }
 
 .label-photo-controls .secondary-button {
   min-height: 42px;
+}
+
+.label-photo-controls .secondary-button:only-of-type,
+.label-photo-controls .secondary-button[hidden] + .secondary-button,
+.label-photo-controls .secondary-button:first-of-type:has(+ .secondary-button[hidden]) {
+  grid-column: 1 / -1;
+}
+
+.label-photo-controls [hidden] {
+  display: none;
 }
 
 .scanner-panel {
@@ -683,6 +695,11 @@ mark.watch-match {
   color: var(--ink);
   font-size: 0.78rem;
   font-weight: 850;
+}
+
+.catalog-saved {
+  color: var(--teal-dark);
+  font-weight: 800;
 }
 
 .feedback-actions {

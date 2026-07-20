@@ -1,9 +1,11 @@
 const STORAGE_KEYS = {
   history: "allerx.history.v1",
   customTriggers: "allerx.customTriggers.v2",
+  productCatalog: "allerx.productCatalog.v1",
 };
 
 const HISTORY_LIMIT = 50;
+const PRODUCT_CATALOG_LIMIT = 500;
 const TESSERACT_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js";
 const TESSERACT_SCRIPT_INTEGRITY = "sha384-2BQ3U3OdKOb0Uczxqr41I9UvZkzr4V9Hv8uSzMMZAlmhsFClvdZX5wi5fDCzG+tM";
 const CROPPER_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js";
@@ -179,23 +181,30 @@ const elements = {
   lookupProductImage: document.querySelector("#lookupProductImage"),
   labelPhotoInput: document.querySelector("#labelPhotoInput"),
   labelPhotoButton: document.querySelector("#labelPhotoButton"),
+  addLabelSectionButton: document.querySelector("#addLabelSectionButton"),
+  lookupSource: document.querySelector("#lookupSource"),
   cropDialog: document.querySelector("#cropDialog"),
   cropStage: document.querySelector("#cropStage"),
   closeCropButton: document.querySelector("#closeCropButton"),
   retakePhotoButton: document.querySelector("#retakePhotoButton"),
   useCropButton: document.querySelector("#useCropButton"),
+  ocrQualityTestButton: document.querySelector("#ocrQualityTestButton"),
 };
 
 let customTriggers = loadJson(STORAGE_KEYS.customTriggers, []);
 let history = loadJson(STORAGE_KEYS.history, []);
+let productCatalog = loadJson(STORAGE_KEYS.productCatalog, []);
 let cameraStream = null;
 let scanTimerId = null;
 let barcodeDetector = null;
 let scanInProgress = false;
 let zxingControls = null;
+let barcodeCandidate = { value: "", count: 0, seenAt: 0 };
 let tesseractLoadPromise = null;
 let ocrWorker = null;
 let ocrDraftNeedsReview = false;
+let appendOcrSection = false;
+let ocrPassLabel = "";
 let cropperLoadPromise = null;
 let cropperInstance = null;
 let cropPhotoUrl = "";
@@ -430,9 +439,114 @@ function normalizeBarcode(value) {
   return value.replace(/\D/g, "");
 }
 
+function isValidGtin(value) {
+  const barcode = normalizeBarcode(value);
+  if (![8, 12, 13, 14].includes(barcode.length)) {
+    return false;
+  }
+
+  const digits = [...barcode].map(Number);
+  const checkDigit = digits.pop();
+  const sum = digits
+    .reverse()
+    .reduce((total, digit, index) => total + digit * (index % 2 === 0 ? 3 : 1), 0);
+  return (10 - (sum % 10)) % 10 === checkDigit;
+}
+
+function extractBarcode(item) {
+  const storedBarcode = normalizeBarcode(item?.barcode || "");
+  if (isValidGtin(storedBarcode)) {
+    return storedBarcode;
+  }
+
+  const sourceMatch = String(item?.sourceNotes || "").match(/\bbarcode\s+(\d{8,14})\b/i);
+  return sourceMatch && isValidGtin(sourceMatch[1]) ? sourceMatch[1] : "";
+}
+
+function resetBarcodeCandidate() {
+  barcodeCandidate = { value: "", count: 0, seenAt: 0 };
+}
+
+function confirmBarcodeCandidate(value) {
+  const barcode = normalizeBarcode(value);
+  if (!isValidGtin(barcode)) {
+    elements.scannerStatus.textContent = "Barcode was unclear. Keep it centered and reduce glare.";
+    resetBarcodeCandidate();
+    return "";
+  }
+
+  const now = Date.now();
+  if (barcode !== barcodeCandidate.value || now - barcodeCandidate.seenAt > 1800) {
+    barcodeCandidate = { value: barcode, count: 1, seenAt: now };
+    elements.scannerStatus.textContent = "Barcode seen. Hold still while AllerX confirms it.";
+    return "";
+  }
+
+  barcodeCandidate.count += 1;
+  barcodeCandidate.seenAt = now;
+  return barcodeCandidate.count >= 2 ? barcode : "";
+}
+
+function renderCatalogSource() {
+  const count = Array.isArray(productCatalog) ? productCatalog.length : 0;
+  elements.lookupSource.textContent = count
+    ? `Open Facts + My Products (${count})`
+    : "Open Facts + My Products";
+}
+
+function findCatalogProduct(barcode) {
+  return productCatalog.find((item) => item.barcode === barcode && item.ingredientText?.trim());
+}
+
+function saveCatalogProduct(historyEntry) {
+  const barcode = extractBarcode(historyEntry);
+  if (!barcode || !historyEntry?.ingredientText?.trim()) {
+    return;
+  }
+
+  const record = {
+    barcode,
+    productName: historyEntry.productName || `Barcode ${barcode}`,
+    ingredientText: historyEntry.ingredientText,
+    sourceNotes: historyEntry.sourceNotes || "Package label",
+    verifiedAt: historyEntry.feedbackAt || new Date().toISOString(),
+    historyId: historyEntry.id,
+  };
+  productCatalog = [record, ...productCatalog.filter((item) => item.barcode !== barcode)]
+    .slice(0, PRODUCT_CATALOG_LIMIT);
+  saveJson(STORAGE_KEYS.productCatalog, productCatalog);
+  renderCatalogSource();
+}
+
+function removeCatalogProductForHistory(historyEntry) {
+  const barcode = extractBarcode(historyEntry);
+  if (!barcode) {
+    return;
+  }
+
+  const nextCatalog = productCatalog.filter((item) => item.barcode !== barcode || item.historyId !== historyEntry.id);
+  if (nextCatalog.length !== productCatalog.length) {
+    productCatalog = nextCatalog;
+    saveJson(STORAGE_KEYS.productCatalog, productCatalog);
+    renderCatalogSource();
+  }
+}
+
+function seedCatalogFromVerifiedHistory() {
+  if (!Array.isArray(productCatalog)) {
+    productCatalog = [];
+  }
+  history
+    .filter((item) => item.feedback === "correct")
+    .slice()
+    .reverse()
+    .forEach(saveCatalogProduct);
+}
+
 function setOcrDraftState(needsReview) {
   ocrDraftNeedsReview = needsReview;
   elements.analyzeButton.textContent = needsReview ? "Check reviewed text" : "Analyze";
+  elements.addLabelSectionButton.hidden = !needsReview;
 }
 
 function normalizeOcrText(value) {
@@ -525,6 +639,9 @@ function closeCropDialog() {
     URL.revokeObjectURL(cropPhotoUrl);
     cropPhotoUrl = "";
   }
+  if (appendOcrSection && elements.ingredientText.value.trim()) {
+    setOcrDraftState(true);
+  }
 }
 
 async function openCropDialog(file) {
@@ -537,9 +654,13 @@ async function openCropDialog(file) {
   closeCropDialog();
   setOcrDraftState(false);
   elements.labelPhotoButton.disabled = true;
-  elements.ingredientText.value = "";
-  renderUnknownLookup("Crop the package photo to the ingredient panel.");
-  setLookupStatus("", "Preparing crop", "Loading the captured package photo.");
+  if (!appendOcrSection) {
+    elements.ingredientText.value = "";
+  }
+  renderUnknownLookup(appendOcrSection
+    ? "Crop the next ingredient section. Existing reviewed text will be kept."
+    : "Crop the package photo to the ingredient panel.");
+  setLookupStatus("", appendOcrSection ? "Preparing next section" : "Preparing crop", "Loading the captured package photo.");
 
   try {
     const cropperLibrary = await loadCropper();
@@ -574,7 +695,7 @@ async function openCropDialog(file) {
       zoomOnTouch: true,
       zoomOnWheel: true,
     });
-    setLookupStatus("", "Crop ingredient panel", "Only the selected area will be read.");
+    setLookupStatus("", appendOcrSection ? "Crop next label section" : "Crop ingredient panel", "Only the selected area will be read.");
   } catch {
     closeCropDialog();
     setLookupStatus("error", "Crop unavailable", "Retake the photo or enter the package ingredients manually.");
@@ -582,16 +703,110 @@ async function openCropDialog(file) {
   }
 }
 
-function canvasToBlob(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) {
-        resolve(blob);
-      } else {
-        reject(new Error("Cropped image could not be created."));
+function createEnhancedLabelCanvas(sourceCanvas) {
+  const canvas = document.createElement("canvas");
+  canvas.width = sourceCanvas.width;
+  canvas.height = sourceCanvas.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.drawImage(sourceCanvas, 0, 0);
+
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  const histogram = new Uint32Array(256);
+  const sampleStep = Math.max(1, Math.floor((canvas.width * canvas.height) / 600000));
+  let sampleCount = 0;
+
+  for (let index = 0; index < pixels.length; index += 4 * sampleStep) {
+    const gray = Math.round(pixels[index] * 0.299 + pixels[index + 1] * 0.587 + pixels[index + 2] * 0.114);
+    histogram[gray] += 1;
+    sampleCount += 1;
+  }
+
+  const lowTarget = sampleCount * 0.02;
+  const highTarget = sampleCount * 0.98;
+  let cumulative = 0;
+  let low = 0;
+  let high = 255;
+  for (let value = 0; value < histogram.length; value += 1) {
+    cumulative += histogram[value];
+    if (cumulative <= lowTarget) {
+      low = value;
+    }
+    if (cumulative >= highTarget) {
+      high = value;
+      break;
+    }
+  }
+
+  if (high - low < 48) {
+    low = Math.max(0, low - 24);
+    high = Math.min(255, high + 24);
+  }
+  const range = Math.max(1, high - low);
+
+  for (let index = 0; index < pixels.length; index += 4) {
+    const gray = pixels[index] * 0.299 + pixels[index + 1] * 0.587 + pixels[index + 2] * 0.114;
+    const leveled = Math.max(0, Math.min(255, ((gray - low) * 255) / range));
+    const contrasted = Math.max(0, Math.min(255, (leveled - 128) * 1.12 + 128));
+    pixels[index] = contrasted;
+    pixels[index + 1] = contrasted;
+    pixels[index + 2] = contrasted;
+    pixels[index + 3] = 255;
+  }
+
+  context.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function createAdaptiveLabelCanvas(sourceCanvas) {
+  const canvas = document.createElement("canvas");
+  canvas.width = sourceCanvas.width;
+  canvas.height = sourceCanvas.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.drawImage(sourceCanvas, 0, 0);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  const tileSize = 64;
+
+  for (let top = 0; top < canvas.height; top += tileSize) {
+    const bottom = Math.min(canvas.height, top + tileSize);
+    for (let left = 0; left < canvas.width; left += tileSize) {
+      const right = Math.min(canvas.width, left + tileSize);
+      let total = 0;
+      let count = 0;
+      for (let y = top; y < bottom; y += 1) {
+        for (let x = left; x < right; x += 1) {
+          total += pixels[(y * canvas.width + x) * 4];
+          count += 1;
+        }
       }
-    }, "image/jpeg", 0.95);
-  });
+      const threshold = Math.max(52, Math.min(225, total / Math.max(1, count) - 17));
+      for (let y = top; y < bottom; y += 1) {
+        for (let x = left; x < right; x += 1) {
+          const index = (y * canvas.width + x) * 4;
+          const value = pixels[index] < threshold ? 0 : 255;
+          pixels[index] = value;
+          pixels[index + 1] = value;
+          pixels[index + 2] = value;
+          pixels[index + 3] = 255;
+        }
+      }
+    }
+  }
+
+  context.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function addOcrBorder(sourceCanvas, padding = 28) {
+  const canvas = document.createElement("canvas");
+  canvas.width = sourceCanvas.width + padding * 2;
+  canvas.height = sourceCanvas.height + padding * 2;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(sourceCanvas, padding, padding);
+  return canvas;
 }
 
 async function useCroppedPhoto() {
@@ -607,7 +822,7 @@ async function useCroppedPhoto() {
 
   try {
     const longSide = Math.max(cropData.width, cropData.height);
-    const scale = Math.min(6, 2200 / longSide);
+    const scale = Math.min(6, 2600 / longSide);
     const width = Math.max(1, Math.round(cropData.width * scale));
     const height = Math.max(1, Math.round(cropData.height * scale));
     const canvas = cropperInstance.getCroppedCanvas({
@@ -621,15 +836,13 @@ async function useCroppedPhoto() {
       throw new Error("Cropped image could not be created.");
     }
 
-    const processedCanvas = document.createElement("canvas");
-    processedCanvas.width = canvas.width;
-    processedCanvas.height = canvas.height;
-    const context = processedCanvas.getContext("2d");
-    context.filter = "grayscale(100%) contrast(115%)";
-    context.drawImage(canvas, 0, 0);
-    const croppedPhoto = await canvasToBlob(processedCanvas);
+    const enhancedCanvas = createEnhancedLabelCanvas(canvas);
+    const adaptiveCanvas = createAdaptiveLabelCanvas(enhancedCanvas);
     closeCropDialog();
-    await readLabelPhoto(croppedPhoto);
+    await readLabelPhoto([
+      addOcrBorder(enhancedCanvas),
+      addOcrBorder(adaptiveCanvas),
+    ]);
   } catch {
     elements.useCropButton.disabled = false;
     elements.useCropButton.textContent = "Use crop";
@@ -644,25 +857,61 @@ function retakeLabelPhoto() {
   elements.labelPhotoInput.click();
 }
 
+function beginLabelPhoto({ append = false } = {}) {
+  appendOcrSection = append && Boolean(elements.ingredientText.value.trim());
+  elements.labelPhotoInput.value = "";
+  elements.labelPhotoInput.click();
+}
+
 function renderOcrProgress(message) {
   const progress = Number.isFinite(message.progress) ? Math.round(message.progress * 100) : 0;
   const isReading = message.status === "recognizing text";
   const detail = isReading
-    ? `Reading label on this device - ${progress}%`
+    ? `${ocrPassLabel || "Reading label on this device"} - ${progress}%`
     : "Preparing on-device text recognition.";
   setLookupStatus("", "Reading ingredient label", detail);
 }
 
-async function readLabelPhoto(file) {
-  if (!file || !file.type.startsWith("image/")) {
+function scoreOcrCandidate(result) {
+  const text = normalizeOcrText(result?.data?.text || "");
+  const compactText = text.replace(/\s/g, "");
+  const letters = (compactText.match(/[a-z]/gi) || []).length;
+  const unusual = (compactText.match(/[^a-z0-9,.;:()/%&+'\-]/gi) || []).length;
+  const alphaRatio = compactText.length ? letters / compactText.length : 0;
+  const unusualRatio = compactText.length ? unusual / compactText.length : 1;
+  const confidence = Number.isFinite(result?.data?.confidence) ? result.data.confidence : 0;
+  const wordCount = (text.match(/[a-z]{2,}/gi) || []).length;
+  const score = confidence + alphaRatio * 18 + Math.min(8, wordCount / 3) - unusualRatio * 90;
+
+  return {
+    result,
+    text,
+    confidence,
+    alphaRatio,
+    unusualRatio,
+    wordCount,
+    score,
+    reliable: confidence >= 62 && alphaRatio >= 0.52 && unusualRatio <= 0.08 && wordCount >= 3,
+  };
+}
+
+async function readLabelPhoto(images) {
+  const imageList = Array.isArray(images) ? images.filter(Boolean) : [images].filter(Boolean);
+  const firstImage = imageList[0];
+  const isImageFile = firstImage?.type?.startsWith?.("image/");
+  const isCanvas = firstImage instanceof HTMLCanvasElement;
+  if (!firstImage || (!isImageFile && !isCanvas)) {
     setLookupStatus("error", "Choose a label photo", "Use the camera or select an image file.");
     return;
   }
 
+  const existingText = appendOcrSection ? elements.ingredientText.value.trim() : "";
   stopBarcodeScan();
   setOcrDraftState(false);
   elements.labelPhotoButton.disabled = true;
-  elements.ingredientText.value = "";
+  if (!appendOcrSection) {
+    elements.ingredientText.value = "";
+  }
   renderUnknownLookup("Reading the package ingredient label.");
   setLookupStatus("", "Preparing label photo", "Loading on-device text recognition.");
 
@@ -673,10 +922,26 @@ async function readLabelPhoto(file) {
     }
 
     ocrWorker = await tesseract.createWorker("eng", 1, { logger: renderOcrProgress });
-    const result = await ocrWorker.recognize(file);
-    const ingredientText = normalizeOcrText(result?.data?.text || "");
+    await ocrWorker.setParameters({
+      tessedit_pageseg_mode: "6",
+      preserve_interword_spaces: "1",
+    });
+
+    ocrPassLabel = "Reading enhanced label";
+    const candidates = [scoreOcrCandidate(await ocrWorker.recognize(firstImage))];
+    const primary = candidates[0];
+    const needsGlarePass = imageList[1]
+      && (!primary.reliable || primary.confidence < 78 || primary.unusualRatio > 0.025);
+    if (needsGlarePass) {
+      ocrPassLabel = "Trying glare-resistant reading";
+      candidates.push(scoreOcrCandidate(await ocrWorker.recognize(imageList[1])));
+    }
+
+    candidates.sort((left, right) => right.score - left.score);
+    const bestCandidate = candidates[0];
+    const ingredientText = bestCandidate.text;
     if (!ingredientText) {
-      setLookupStatus("warning", "No text detected", "Retake the photo close to the ingredient panel in bright, even light.");
+      setLookupStatus("warning", "No text detected", "Retake a smaller label section in bright, even light.");
       renderUnknownLookup("No ingredient text could be read from the photo.");
       return;
     }
@@ -688,15 +953,34 @@ async function readLabelPhoto(file) {
     elements.sourceNotes.value = barcode
       ? `Package ingredient label - OCR draft - barcode ${barcode}`
       : "Package ingredient label - OCR draft";
-    elements.ingredientText.value = ingredientText;
+    elements.ingredientText.value = normalizeOcrText(existingText
+      ? `${existingText}\n${ingredientText}`
+      : ingredientText);
     setOcrDraftState(true);
-    setLookupStatus("warning", "OCR draft ready", "Review every line against the package, correct mistakes, then select Check reviewed text.");
+    if (bestCandidate.reliable) {
+      setLookupStatus(
+        "warning",
+        existingText ? "Label section added" : "OCR draft ready",
+        "Review every line, add another section if needed, then select Check reviewed text.",
+      );
+    } else {
+      setLookupStatus(
+        "warning",
+        "Difficult label detected",
+        "This reading may be unreliable. Retake a smaller section without glare or correct every line before checking it.",
+      );
+    }
     renderUnknownLookup("OCR text must be reviewed before AllerX checks it.");
     elements.ingredientText.focus();
   } catch {
-    setLookupStatus("error", "Label reading unavailable", "Check the connection, retake the photo, or enter the package ingredients manually.");
+    setLookupStatus("error", "Label reading unavailable", "Retake a smaller section or enter the package ingredients manually.");
     renderUnknownLookup("The package label could not be read.");
   } finally {
+    ocrPassLabel = "";
+    appendOcrSection = false;
+    if (existingText && elements.ingredientText.value.trim() && !ocrDraftNeedsReview) {
+      setOcrDraftState(true);
+    }
     if (ocrWorker) {
       await ocrWorker.terminate().catch(() => {});
       ocrWorker = null;
@@ -734,8 +1018,8 @@ async function lookupBarcode(rawBarcode = elements.barcodeInput.value) {
   const barcode = normalizeBarcode(rawBarcode);
   elements.barcodeInput.value = barcode;
 
-  if (barcode.length < 8 || barcode.length > 14) {
-    setLookupStatus("error", "Check barcode", "Enter an 8-14 digit UPC or EAN.");
+  if (!isValidGtin(barcode)) {
+    setLookupStatus("error", "Barcode read unclear", "Retake the scan or enter the complete UPC/EAN printed below the bars.");
     return;
   }
 
@@ -748,9 +1032,26 @@ async function lookupBarcode(rawBarcode = elements.barcodeInput.value) {
   setLookupStatus("", "Looking up product", `Barcode ${barcode}`);
 
   try {
-    const endpoint = new URL(`https://world.openfoodfacts.org/api/v3.6/product/${encodeURIComponent(barcode)}`);
+    const catalogProduct = findCatalogProduct(barcode);
+    if (catalogProduct) {
+      const verifiedDate = new Date(catalogProduct.verifiedAt).toLocaleDateString([], {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      elements.productName.value = catalogProduct.productName || `Barcode ${barcode}`;
+      elements.sourceNotes.value = `My Products - package verified ${verifiedDate} - barcode ${barcode}`;
+      elements.ingredientText.value = catalogProduct.ingredientText;
+      setLookupStatus("success", elements.productName.value, `Found in My Products. Package text verified ${verifiedDate}.`);
+      analyze();
+      return;
+    }
+
+    const endpoint = new URL(`https://world.openfoodfacts.org/api/v3/product/${encodeURIComponent(barcode)}`);
     endpoint.searchParams.set("product_type", "all");
-    endpoint.searchParams.set("fields", "code,product_name,brands,ingredients_text,ingredients_text_en,image_front_url,last_modified_t,product_type");
+    endpoint.searchParams.set("cc", "us");
+    endpoint.searchParams.set("lc", "en");
+    endpoint.searchParams.set("fields", "code,product_name,product_name_en,brands,ingredients_text,ingredients_text_en,image_front_url,last_modified_t,product_type");
     const response = await fetch(endpoint, {
       headers: { Accept: "application/json" },
     });
@@ -777,7 +1078,7 @@ async function lookupBarcode(rawBarcode = elements.barcodeInput.value) {
       return;
     }
 
-    const productName = product.product_name || product.brands || `Barcode ${barcode}`;
+    const productName = product.product_name_en || product.product_name || product.brands || `Barcode ${barcode}`;
     const ingredientText = product.ingredients_text_en || product.ingredients_text || "";
     const source = getFactsSource(response.url);
     elements.productName.value = productName;
@@ -820,6 +1121,23 @@ function stopBarcodeScan() {
 
   elements.scannerVideo.srcObject = null;
   elements.scannerPanel.hidden = true;
+  resetBarcodeCandidate();
+}
+
+async function improveCameraFocus(stream) {
+  const track = stream?.getVideoTracks?.()[0];
+  if (!track?.getCapabilities || !track?.applyConstraints) {
+    return;
+  }
+
+  try {
+    const capabilities = track.getCapabilities();
+    if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes("continuous")) {
+      await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+    }
+  } catch {
+    // Some mobile browsers report focus controls but reject manual constraints.
+  }
 }
 
 async function scanVideoFrame() {
@@ -830,7 +1148,7 @@ async function scanVideoFrame() {
   try {
     if (elements.scannerVideo.readyState >= 2) {
       const results = await barcodeDetector.detect(elements.scannerVideo);
-      const barcode = normalizeBarcode(results[0]?.rawValue || "");
+      const barcode = confirmBarcodeCandidate(results[0]?.rawValue || "");
       if (barcode) {
         elements.barcodeInput.value = barcode;
         stopBarcodeScan();
@@ -873,13 +1191,13 @@ async function startBarcodeScan() {
           audio: false,
           video: {
             facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 960 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
           },
         },
         elements.scannerVideo,
         (result) => {
-          const barcode = normalizeBarcode(result?.getText?.() || result?.text || "");
+          const barcode = confirmBarcodeCandidate(result?.getText?.() || result?.text || "");
           if (barcode) {
             elements.barcodeInput.value = barcode;
             stopBarcodeScan();
@@ -890,7 +1208,7 @@ async function startBarcodeScan() {
       return;
     }
 
-    const preferredFormats = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"];
+    const preferredFormats = ["ean_13", "ean_8", "upc_a", "upc_e"];
     const supportedFormats = await globalThis.BarcodeDetector.getSupportedFormats();
     const formats = preferredFormats.filter((format) => supportedFormats.includes(format));
     barcodeDetector = formats.length
@@ -900,10 +1218,11 @@ async function startBarcodeScan() {
       audio: false,
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 960 },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
       },
     });
+    await improveCameraFocus(cameraStream);
     elements.scannerVideo.srcObject = cameraStream;
     await elements.scannerVideo.play();
     scanInProgress = true;
@@ -933,8 +1252,10 @@ function analyze({ save = true } = {}) {
 
   if (save && ingredientText.trim()) {
     const previousEntry = history.find((item) => item.ingredientText === ingredientText);
+    const barcode = normalizeBarcode(elements.barcodeInput.value);
     const entry = {
       id: String(Date.now()),
+      barcode: isValidGtin(barcode) ? barcode : "",
       productName: productName || "Untitled product",
       sourceNotes,
       ingredientText,
@@ -1013,6 +1334,9 @@ function renderHistory() {
       const sourceLine = item.sourceNotes
         ? `<p class="history-detail">Source: ${escapeHtml(item.sourceNotes)}</p>`
         : "";
+      const catalogLine = item.feedback === "correct" && extractBarcode(item)
+        ? `<p class="history-detail catalog-saved">Saved to My Products for this barcode.</p>`
+        : "";
       const feedbackButtons = feedbackOptions
         .map((option) => {
           const isSelected = item.feedback === option.value;
@@ -1028,6 +1352,7 @@ function renderHistory() {
           </div>
           <p class="history-detail">${escapeHtml(date)} - ${escapeHtml(matchText)}</p>
           ${sourceLine}
+          ${catalogLine}
           <p class="feedback-label">Was this result right?</p>
           <div class="feedback-actions" role="group" aria-label="Accuracy feedback for ${escapeHtml(item.productName)}">
             ${feedbackButtons}
@@ -1047,10 +1372,17 @@ function saveHistoryFeedback(id, feedback) {
     return;
   }
 
+  const previousEntry = history.find((entry) => entry.id === id);
   history = history.map((entry) => entry.id === id
     ? { ...entry, feedback, feedbackAt: new Date().toISOString() }
     : entry);
   saveJson(STORAGE_KEYS.history, history);
+  const updatedEntry = history.find((entry) => entry.id === id);
+  if (updatedEntry?.feedback === "correct") {
+    saveCatalogProduct(updatedEntry);
+  } else if (previousEntry?.feedback === "correct") {
+    removeCatalogProductForHistory(previousEntry);
+  }
   renderHistory();
 }
 
@@ -1067,6 +1399,7 @@ function exportHistoryCsv() {
 
   const headers = [
     "Checked at",
+    "Barcode",
     "Product",
     "Result",
     "Matched triggers",
@@ -1081,6 +1414,7 @@ function exportHistoryCsv() {
     const feedback = feedbackOptions.find((option) => option.value === item.feedback)?.label || "Not reviewed";
     return [
       item.checkedAt,
+      extractBarcode(item),
       item.productName,
       item.title,
       matches,
@@ -1110,6 +1444,7 @@ function loadHistoryItem(id) {
   }
 
   elements.productName.value = item.productName === "Untitled product" ? "" : item.productName;
+  elements.barcodeInput.value = extractBarcode(item);
   elements.sourceNotes.value = item.sourceNotes || "";
   elements.ingredientText.value = item.ingredientText;
   analyze({ save: false });
@@ -1126,6 +1461,7 @@ function clearForm() {
   stopBarcodeScan();
   closeCropDialog();
   setOcrDraftState(false);
+  appendOcrSection = false;
   elements.barcodeInput.value = "";
   elements.productName.value = "";
   elements.sourceNotes.value = "";
@@ -1141,10 +1477,8 @@ function bindEvents() {
   elements.lookupBarcodeButton.addEventListener("click", () => lookupBarcode());
   elements.scanBarcodeButton.addEventListener("click", startBarcodeScan);
   elements.stopScanButton.addEventListener("click", stopBarcodeScan);
-  elements.labelPhotoButton.addEventListener("click", () => {
-    elements.labelPhotoInput.value = "";
-    elements.labelPhotoInput.click();
-  });
+  elements.labelPhotoButton.addEventListener("click", () => beginLabelPhoto());
+  elements.addLabelSectionButton.addEventListener("click", () => beginLabelPhoto({ append: true }));
   elements.labelPhotoInput.addEventListener("change", () => {
     openCropDialog(elements.labelPhotoInput.files?.[0]);
   });
@@ -1242,6 +1576,8 @@ function bindEvents() {
 
 renderBuiltInChips();
 renderCustomChips();
+seedCatalogFromVerifiedHistory();
+renderCatalogSource();
 renderHistory();
 bindEvents();
 

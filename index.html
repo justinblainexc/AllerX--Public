@@ -44,7 +44,7 @@
                 <p class="eyebrow">Product Lookup</p>
                 <h3 id="barcodeTitle">Barcode</h3>
               </div>
-              <span class="lookup-source">Open Facts</span>
+              <span class="lookup-source" id="lookupSource">Open Facts + My Products</span>
             </div>
             <div class="barcode-controls">
               <input id="barcodeInput" class="text-input" type="text" inputmode="numeric" autocomplete="off" pattern="[0-9]*" aria-label="Barcode number" placeholder="UPC or EAN">
@@ -71,6 +71,7 @@
             <div class="label-photo-controls">
               <input id="labelPhotoInput" type="file" accept="image/*" capture="environment" hidden>
               <button class="secondary-button" id="labelPhotoButton" type="button">Photograph ingredient label</button>
+              <button class="secondary-button" id="addLabelSectionButton" type="button" hidden>Add label section</button>
             </div>
           </div>
 
